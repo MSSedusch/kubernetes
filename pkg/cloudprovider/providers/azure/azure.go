@@ -228,7 +228,14 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 	}
 
 	servicePrincipalToken, err := auth.GetServicePrincipalToken(&config.AzureAuthConfig, env)
-	if err != nil {
+	if err == auth.ErrorNoAuth {
+		if !config.UseInstanceMetadata {
+			// No credentials provided, useInstanceMetadata should be enabled.
+			return nil, fmt.Errorf("useInstanceMetadata must be enabled without Azure credentials")
+		}
+
+		klog.V(2).Infof("Azure cloud provider is starting without credentials")
+	} else if err != nil {
 		return nil, err
 	}
 
@@ -286,13 +293,6 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 		}
 	}
 
-	azClientConfig := &azClientConfig{
-		subscriptionID:          config.SubscriptionID,
-		resourceManagerEndpoint: env.ResourceManagerEndpoint,
-		servicePrincipalToken:   servicePrincipalToken,
-		rateLimiterReader:       operationPollRateLimiter,
-		rateLimiterWriter:       operationPollRateLimiterWrite,
-	}
 	az := Cloud{
 		Config:             *config,
 		Environment:        *env,
@@ -300,21 +300,6 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 		nodeResourceGroups: map[string]string{},
 		unmanagedNodes:     sets.NewString(),
 		routeCIDRs:         map[string]string{},
-
-		DisksClient:                     newAzDisksClient(azClientConfig),
-		RoutesClient:                    newAzRoutesClient(azClientConfig),
-		SubnetsClient:                   newAzSubnetsClient(azClientConfig),
-		InterfacesClient:                newAzInterfacesClient(azClientConfig),
-		RouteTablesClient:               newAzRouteTablesClient(azClientConfig),
-		LoadBalancerClient:              newAzLoadBalancersClient(azClientConfig),
-		SecurityGroupsClient:            newAzSecurityGroupsClient(azClientConfig),
-		StorageAccountClient:            newAzStorageAccountClient(azClientConfig),
-		VirtualMachinesClient:           newAzVirtualMachinesClient(azClientConfig),
-		PublicIPAddressesClient:         newAzPublicIPAddressesClient(azClientConfig),
-		VirtualMachineSizesClient:       newAzVirtualMachineSizesClient(azClientConfig),
-		VirtualMachineScaleSetsClient:   newAzVirtualMachineScaleSetsClient(azClientConfig),
-		VirtualMachineScaleSetVMsClient: newAzVirtualMachineScaleSetVMsClient(azClientConfig),
-		FileClient:                      &azureFileClient{env: *env},
 	}
 
 	// Conditionally configure resource request backoff
@@ -349,6 +334,37 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// No credentials provided, InstanceMetadataService would be used for getting Azure resources.
+	// Note that this only applies to Kubelet, controller-manager should configure credentials for managing Azure resources.
+	if servicePrincipalToken == nil {
+		return &az, nil
+	}
+
+	azClientConfig := &azClientConfig{
+		subscriptionID:          config.SubscriptionID,
+		resourceManagerEndpoint: env.ResourceManagerEndpoint,
+		servicePrincipalToken:   servicePrincipalToken,
+		rateLimiterReader:       operationPollRateLimiter,
+		rateLimiterWriter:       operationPollRateLimiterWrite,
+	}
+
+
+
+	az.DisksClient=                     newAzDisksClient(azClientConfig)
+	az.RoutesClient=                    newAzRoutesClient(azClientConfig)
+	az.SubnetsClient=                   newAzSubnetsClient(azClientConfig)
+	az.InterfacesClient=                newAzInterfacesClient(azClientConfig)
+	az.RouteTablesClient=               newAzRouteTablesClient(azClientConfig)
+	az.LoadBalancerClient=              newAzLoadBalancersClient(azClientConfig)
+	az.SecurityGroupsClient=            newAzSecurityGroupsClient(azClientConfig)
+	az.StorageAccountClient=            newAzStorageAccountClient(azClientConfig)
+	az.VirtualMachinesClient=           newAzVirtualMachinesClient(azClientConfig)
+	az.PublicIPAddressesClient=         newAzPublicIPAddressesClient(azClientConfig)
+	az.VirtualMachineSizesClient=       newAzVirtualMachineSizesClient(azClientConfig)
+	az.VirtualMachineScaleSetsClient=   newAzVirtualMachineScaleSetsClient(azClientConfig)
+	az.VirtualMachineScaleSetVMsClient= newAzVirtualMachineScaleSetVMsClient(azClientConfig)
+	az.FileClient=                      &azureFileClient{env: *env}
 
 	if az.MaximumLoadBalancerRuleCount == 0 {
 		az.MaximumLoadBalancerRuleCount = maximumLoadBalancerRuleCount
